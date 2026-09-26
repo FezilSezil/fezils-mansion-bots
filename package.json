@@ -1,0 +1,18 @@
+{
+  "name": "fezils-mansion-bots",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Discord-боты Fezil's Mansion: бот отзывов (review_bot.js) и анонсер постов Patreon/Boosty (post_announcer.js)",
+  "main": "start.js",
+  "scripts": {
+    "start": "node start.js",
+    "review-bot": "node review_bot.js",
+    "post-announcer": "node post_announcer.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0"
+  }
+}
