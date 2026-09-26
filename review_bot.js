@@ -48,7 +48,7 @@ catch {
   process.exit(1);
 }
 const {
-  Client, GatewayIntentBits, Events, ChannelType, PermissionFlagsBits,
+  Client, GatewayIntentBits, Events, ChannelType, PermissionFlagsBits, Partials, AuditLogEvent,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, EmbedBuilder, MessageFlags,
 } = discord;
 
@@ -67,7 +67,17 @@ const {
     console.log('Токен взял из буфера обмена и сохранил в .env.');
   }
 
-  const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
+  const client = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
+      GatewayIntentBits.GuildMembers,
+      GatewayIntentBits.GuildModeration,
+      GatewayIntentBits.GuildVoiceStates,
+    ],
+    partials: [Partials.Message, Partials.Channel, Partials.GuildMember],
+  });
 
   client.once(Events.ClientReady, async () => {
     console.log(`Бот отзывов запущен как ${client.user.tag}`);
@@ -158,6 +168,103 @@ const {
     }
   });
 
+  // ---------- общие логи сервера (канал #logs) ----------
+  client.on(Events.GuildMemberAdd, member => logServerEvent(member.guild, {
+    color: 0x2ECC71,
+    title: '📥 Участник зашёл',
+    description: `${member.user.tag} (<@${member.user.id}>)`,
+    footer: `ID: ${member.user.id}`,
+  }).catch(console.error));
+
+  client.on(Events.GuildMemberRemove, member => logServerEvent(member.guild, {
+    color: 0xE67E22,
+    title: '📤 Участник вышел',
+    description: `${member.user.tag} (<@${member.user.id}>)`,
+    footer: `ID: ${member.user.id}`,
+  }).catch(console.error));
+
+  client.on(Events.GuildBanAdd, async ban => {
+    const executor = await findAuditExecutor(ban.guild, AuditLogEvent.MemberBanAdd, ban.user.id).catch(() => null);
+    await logServerEvent(ban.guild, {
+      color: 0xE74C3C,
+      title: '🔨 Бан',
+      description: `${ban.user.tag} (<@${ban.user.id}>)${executor ? `\nКто забанил: ${executor.tag}` : ''}`,
+      footer: `ID: ${ban.user.id}`,
+    }).catch(console.error);
+  });
+
+  client.on(Events.GuildBanRemove, ban => logServerEvent(ban.guild, {
+    color: 0x3498DB,
+    title: '🔓 Разбан',
+    description: `${ban.user.tag} (<@${ban.user.id}>)`,
+    footer: `ID: ${ban.user.id}`,
+  }).catch(console.error));
+
+  client.on(Events.MessageDelete, message => {
+    if (!message.guild || message.author?.bot) return;
+    logServerEvent(message.guild, {
+      color: 0x992D22,
+      title: '🗑️ Сообщение удалено',
+      description: `Канал: <#${message.channel.id}>\nАвтор: ${message.author ? message.author.tag : 'неизвестно'}\n${(message.content || '*(нет текста / вложение)*').slice(0, 1000)}`,
+    }).catch(console.error);
+  });
+
+  client.on(Events.MessageUpdate, (oldMessage, newMessage) => {
+    if (!newMessage.guild || newMessage.author?.bot) return;
+    if (oldMessage.content === newMessage.content) return; // например, только добавился embed от ссылки
+    logServerEvent(newMessage.guild, {
+      color: 0xF39C12,
+      title: '✏️ Сообщение изменено',
+      description: `Канал: <#${newMessage.channel.id}>\nАвтор: ${newMessage.author.tag}\n**Было:** ${(oldMessage.content || '*(пусто)*').slice(0, 500)}\n**Стало:** ${(newMessage.content || '*(пусто)*').slice(0, 500)}`,
+    }).catch(console.error);
+  });
+
+  client.on(Events.ChannelCreate, channel => {
+    if (!channel.guild) return;
+    logServerEvent(channel.guild, {
+      color: 0x2ECC71,
+      title: '📁 Канал создан',
+      description: `${channel.name} (${channel.type === ChannelType.GuildVoice ? 'голосовой' : 'текстовый'})`,
+    }).catch(console.error);
+  });
+
+  client.on(Events.ChannelDelete, channel => {
+    if (!channel.guild) return;
+    logServerEvent(channel.guild, {
+      color: 0xE74C3C,
+      title: '🗑️ Канал удалён',
+      description: `${channel.name}`,
+    }).catch(console.error);
+  });
+
+  client.on(Events.GuildRoleCreate, role => logServerEvent(role.guild, {
+    color: 0x2ECC71,
+    title: '🎭 Роль создана',
+    description: `${role.name}`,
+  }).catch(console.error));
+
+  client.on(Events.GuildRoleDelete, role => logServerEvent(role.guild, {
+    color: 0xE74C3C,
+    title: '🎭 Роль удалена',
+    description: `${role.name}`,
+  }).catch(console.error));
+
+  client.on(Events.GuildMemberUpdate, (oldMember, newMember) => {
+    const oldRoles = oldMember.roles.cache;
+    const newRoles = newMember.roles.cache;
+    const added = newRoles.filter(r => !oldRoles.has(r.id));
+    const removed = oldRoles.filter(r => !newRoles.has(r.id));
+    if (added.size === 0 && removed.size === 0) return;
+    const parts = [];
+    if (added.size) parts.push(`Выданы роли: ${added.map(r => r.name).join(', ')}`);
+    if (removed.size) parts.push(`Сняты роли: ${removed.map(r => r.name).join(', ')}`);
+    logServerEvent(newMember.guild, {
+      color: 0x3498DB,
+      title: '🎭 Роли участника изменены',
+      description: `${newMember.user.tag} (<@${newMember.user.id}>)\n${parts.join('\n')}`,
+    }).catch(console.error);
+  });
+
   await client.login(TOKEN).catch(e => {
     console.error(`Не смог войти: ${e.message}`);
     if (/token/i.test(e.message)) {
@@ -243,6 +350,39 @@ async function applyStatsChannelName(guild, name) {
   }
   lastStatsRename = Date.now();
   console.log(`Канал со статистикой отзывов: ${name}`);
+}
+
+// ---------- общие логи сервера (канал #logs) ----------
+const SERVER_LOG_CHANNEL_NAME = 'logs';
+async function getOrCreateServerLogChannel(guild) {
+  await guild.channels.fetch();
+  let ch = guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.name === SERVER_LOG_CHANNEL_NAME);
+  if (!ch) {
+    ch = await guild.channels.create({
+      name: SERVER_LOG_CHANNEL_NAME,
+      type: ChannelType.GuildText,
+      permissionOverwrites: [{ id: guild.roles.everyone, deny: [PermissionFlagsBits.ViewChannel] }],
+    });
+    console.log(`Создан канал общих логов сервера: ${ch.name}`);
+  }
+  return ch;
+}
+async function logServerEvent(guild, { color, title, description, footer }) {
+  if (!guild) return;
+  const ch = await getOrCreateServerLogChannel(guild);
+  const embed = new EmbedBuilder()
+    .setColor(color)
+    .setTitle(title)
+    .setDescription(description?.slice(0, 4000) || '—')
+    .setTimestamp();
+  if (footer) embed.setFooter({ text: footer });
+  await ch.send({ embeds: [embed] });
+}
+// Смотрим аудит-лог, чтобы понять, кто выполнил действие (например, кто забанил) — не всегда доступно/точно.
+async function findAuditExecutor(guild, auditEventType, targetId) {
+  const logs = await guild.fetchAuditLogs({ type: auditEventType, limit: 5 });
+  const entry = logs.entries.find(e => e.target?.id === targetId);
+  return entry?.executor || null;
 }
 
 // ---------- архивация закрытых тикетов ----------
